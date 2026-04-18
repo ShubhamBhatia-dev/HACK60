@@ -1,0 +1,8 @@
+frontend/node_modules/
+env/
+backend/models/
+
+*.gguf
+
+__pycache__/
+
