@@ -1,21 +1,78 @@
 # JD Enhancer — Self-Learning Job Description Enhancement System
 
-A full-stack AI system that takes messy, unstructured job descriptions and turns them into clean, ATS-ready markdown. The model doesn't just do this once — it watches how users edit its outputs and retrains itself periodically to get better over time.
+> A self-hosted AI pipeline that converts unstructured job descriptions into professional, ATS-ready formats — and continuously improves itself through user feedback and automated retraining.
 
-Built for HACK60.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=black)
+![MongoDB](https://img.shields.io/badge/MongoDB-Local-47A248?style=flat&logo=mongodb&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=flat)
 
 ---
 
-## What's happening under the hood
+## Table of Contents
 
-Users paste a raw JD. A locally-running small language model (Qwen2.5-1.5B or Phi) generates a structured output in real-time via SSE streaming. If the user wants a higher-quality pass, they can optionally route it through Gemini for refinement.
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [Training Pipeline](#training-pipeline)
+- [API Reference](#api-reference)
+- [Evaluation Metrics](#evaluation-metrics)
+- [Environment Variables](#environment-variables)
 
-Whatever the user saves — raw input, SLM output, LLM-refined version, and any manual edits — gets stored in MongoDB. Once enough feedback pairs accumulate, training kicks off automatically:
+---
 
-- **≥ 50 new pairs** → GRPO reinforcement learning pass (`reinforcement.py`)
-- **≥ 200 new pairs** → Full SFT + DPO post-training (`postTrainer.py`)
+## Overview
 
-After each training run, the new model gets exported to GGUF and registered as the `latest` model. Next inference request picks it up.
+HR teams frequently deal with raw, inconsistent job descriptions that require significant manual effort before they can be posted on hiring platforms or parsed by Applicant Tracking Systems. This project addresses that problem with a locally-hosted AI system that:
+
+- Accepts a raw job description as input
+- Generates a structured, professional markdown output in real-time via a fine-tuned Small Language Model (SLM)
+- Optionally routes the output through Google Gemini for a higher-quality refinement pass
+- Stores every interaction (raw input, SLM output, LLM-refined version, user edits) in MongoDB
+- Automatically triggers retraining when enough feedback pairs have accumulated
+
+The model improves over time without manual intervention. Each retraining cycle produces a new GGUF artifact that is registered as the active inference model — no server restart required.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                        Frontend (React)                      │
+│   Auth  ·  Markdown Editor  ·  Version History  ·  Metrics  │
+└──────────────────────┬───────────────────────────────────────┘
+                       │  SSE / REST
+┌──────────────────────▼───────────────────────────────────────┐
+│                   FastAPI Backend                            │
+│                                                              │
+│  ┌─────────────┐   ┌──────────────┐   ┌──────────────────┐  │
+│  │  inference  │   │   gemini.py  │   │    auth / JWT    │  │
+│  │ (llama-cpp) │   │  (optional)  │   │                  │  │
+│  └──────┬──────┘   └──────────────┘   └──────────────────┘  │
+│         │                                                     │
+│  ┌──────▼──────────────────────────────────────────────────┐ │
+│  │                      MongoDB                            │ │
+│  │  users · jobs · training_runs · training_meta           │ │
+│  └──────────────────────────┬───────────────────────────── ┘ │
+└─────────────────────────────│────────────────────────────────┘
+                              │  Feedback threshold check
+              ┌───────────────▼──────────────────┐
+              │        Training Trigger           │
+              │                                   │
+              │  ≥  50 pairs → GRPO (RL)          │
+              │  ≥ 200 pairs → SFT + DPO          │
+              └───────────────┬──────────────────-┘
+                              │
+                    ┌─────────▼──────────┐
+                    │  New GGUF export   │
+                    │  registered as     │
+                    │  `latest` model    │
+                    └────────────────────┘
+```
 
 ---
 
@@ -24,15 +81,16 @@ After each training run, the new model gets exported to GGUF and registered as t
 ```
 HACK60/
 ├── backend/
-│   ├── serve.py            # FastAPI app — auth, streaming inference, job saving
-│   ├── inference.py        # llama-cpp model loading + token streaming
-│   ├── config.py           # Prompt templates, DB URL, Gemini config
-│   ├── database.py         # MongoDB collections + indexes
-│   ├── auth.py             # JWT-based auth (signup/login)
-│   ├── gemini.py           # Gemini API integration for LLM enhancement
-│   ├── postTrainer.py      # SFT → DPO training pipeline (≥200 pairs)
-│   ├── reinforcement.py    # GRPO RL pipeline (≥50 pairs)
-│   ├── latestPath.py       # Tracks which GGUF is the active model
+│   ├── serve.py                  # FastAPI application entry point
+│   ├── inference.py              # llama-cpp model loading and token streaming
+│   ├── config.py                 # Prompt templates, database URL, Gemini config
+│   ├── database.py               # MongoDB collections and index definitions
+│   ├── auth.py                   # JWT authentication (signup / login)
+│   ├── gemini.py                 # Google Gemini API integration
+│   ├── postTrainer.py            # SFT → DPO automated training pipeline
+│   ├── reinforcement.py          # GRPO reinforcement learning pipeline
+│   ├── latestPath.py             # Active model path registry (MongoDB-backed)
+│   ├── models/                   # GGUF model files (not tracked in Git)
 │   ├── datasets/
 │   │   ├── final_output.json
 │   │   ├── local_distilled_jd_dataset.json
@@ -42,66 +100,72 @@ HACK60/
 │
 ├── frontend/
 │   └── src/
-│       ├── pages/          # Login, Signup, Dashboard, AccuracyPage
-│       ├── components/     # ChatInput, MarkdownEditor, VersionsPanel, Sidebar
-│       ├── api/client.js   # All API calls
-│       └── store/          # Zustand state
+│       ├── pages/
+│       │   ├── Login.jsx
+│       │   ├── Signup.jsx
+│       │   ├── Dashboard.jsx
+│       │   └── AccuracyPage.jsx
+│       ├── components/
+│       │   ├── ChatInput.jsx
+│       │   ├── MarkdownEditor.jsx
+│       │   ├── VersionsPanel.jsx
+│       │   └── Sidebar.jsx
+│       ├── api/client.js
+│       └── store/useAppStore.js
 │
-└── extra_scripts/          # (files_.zip)
-    ├── train.py            # Initial LoRA fine-tuning on Qwen2.5-3B
-    ├── preprocess.py       # Build input/output pairs from raw folder structure
-    ├── gendpo.py           # Generate DPO preference pairs
-    ├── train_evaluate_dpo.py
-    ├── make_gg.py          # GGUF conversion helper
+└── scripts/                      # Offline data preparation and initial training
+    ├── preprocess.py             # Build input/output pairs from folder structure
+    ├── train.py                  # Initial LoRA fine-tuning (Qwen2.5-3B)
+    ├── gendpo.py                 # Generate DPO preference pairs
+    ├── train_evaluate_dpo.py     # DPO alignment training + evaluation
+    ├── make_gg.py                # GGUF export helper
     └── test.py
 ```
 
 ---
 
-## Models
-
-Three GGUF models are supported, loaded lazily and cached in memory:
-
-| Key         | Model                         | Notes                        |
-|-------------|-------------------------------|------------------------------|
-| `qwen`      | Qwen2.5-1.5B-Instruct         | Default                      |
-| `phi`       | Phi (Microsoft)               | Alternative                  |
-| `tinyllama` | TinyLlama fine-tuned          | Lightweight option           |
-| `latest`    | Post-training output          | Resolved dynamically at runtime |
-
-All models run via `llama-cpp-python` with GPU offloading (`n_gpu_layers=-1`).
-
----
-
 ## Tech Stack
 
-**Backend**
-- Python, FastAPI
-- `llama-cpp-python` for local GGUF inference
-- `unsloth` + `peft` for LoRA/QLoRA fine-tuning
-- TRL for SFT, DPO, and GRPO trainers
-- MongoDB (via pymongo) for storing jobs, users, and training run metrics
-- Google Gemini API for optional LLM refinement pass
-- JWT auth
+### Backend
+| Component | Technology |
+|---|---|
+| API Server | FastAPI |
+| Local Inference | `llama-cpp-python` (GGUF, GPU offloaded) |
+| Fine-tuning | `unsloth`, `peft`, `trl` (SFT / DPO / GRPO) |
+| LLM Refinement | Google Gemini API |
+| Database | MongoDB (pymongo) |
+| Authentication | JWT (python-jose) |
 
-**Frontend**
-- React + Vite
-- Zustand for state
-- Markdown editor with live preview
-- SSE-based streaming (tokens show up as they're generated)
-- Accuracy/metrics dashboard page
+### Frontend
+| Component | Technology |
+|---|---|
+| Framework | React 18 + Vite |
+| State Management | Zustand |
+| Streaming | Server-Sent Events (SSE) |
+| Editor | Markdown editor with live preview |
+
+### Supported Inference Models
+
+| Key | Base Model | Notes |
+|---|---|---|
+| `qwen` *(default)* | Qwen2.5-1.5B-Instruct | Primary model |
+| `phi` | Microsoft Phi | Alternative |
+| `tinyllama` | TinyLlama (fine-tuned) | Lightweight option |
+| `latest` | Post-training artifact | Resolved dynamically at runtime |
+
+All models run via `llama-cpp-python` with full GPU offloading. The `latest` key bypasses the in-memory model cache so newly trained checkpoints are available immediately without restarting the server.
 
 ---
 
-## Setup
+## Getting Started
 
 ### Prerequisites
 
 - Python 3.10+
-- Node 18+
-- MongoDB running locally on port 27017
-- CUDA-capable GPU recommended (CPU works but slower)
-- GGUF model files placed in `backend/models/`
+- Node.js 18+
+- MongoDB instance running on `localhost:27017`
+- CUDA-capable GPU (recommended; CPU inference is supported but significantly slower)
+- GGUF model files placed under `backend/models/`
 
 ### Backend
 
@@ -109,10 +173,11 @@ All models run via `llama-cpp-python` with GPU offloading (`n_gpu_layers=-1`).
 cd backend
 pip install -r requirements.txt
 
-# Add your Gemini API key
-echo "GEMINI_API_KEY=your_key_here" > .env
+# Configure environment variables
+cp .env.example .env
+# Edit .env and add your GEMINI_API_KEY and SECRET_KEY
 
-# Start the server
+# Start the API server
 uvicorn serve:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -124,84 +189,128 @@ npm install
 npm run dev
 ```
 
+The frontend development server starts at `http://localhost:5173` and proxies API requests to the backend.
+
 ---
 
 ## Training Pipeline
 
-### Initial Training (one-time setup)
+### Stage 0 — Data Preparation (one-time)
 
-Use the scripts in `extra_scripts/` to prepare data and run the first fine-tune:
+Raw job descriptions and their enhanced counterparts must be structured as folder pairs before training:
 
-```bash
-# Step 1: Build dataset from raw JD folder pairs
-python preprocess.py
-
-# Step 2: Fine-tune with LoRA on Qwen2.5-3B
-python train.py
-
-# Step 3: Generate DPO preference pairs
-python gendpo.py
-
-# Step 4: Run DPO alignment
-python train_evaluate_dpo.py
-
-# Step 5: Export to GGUF
-python make_gg.py
+```
+dataset/
+└── 001/
+    ├── raw_jd.txt
+    └── enhanced_job_description.md
 ```
 
-### Continuous Learning (automated)
-
-The system checks feedback pair counts on each save and auto-triggers the right trainer:
+Run the preprocessing script to consolidate them into a single training file:
 
 ```bash
-# Manually trigger if needed:
+python scripts/preprocess.py
+```
 
-# GRPO (≥50 pairs)
-python reinforcement.py
+### Stage 1 — Initial Fine-Tuning
 
-# SFT + DPO (≥200 pairs)
-python postTrainer.py \
+Fine-tune the base model using LoRA on the prepared dataset:
+
+```bash
+python scripts/train.py
+```
+
+This runs supervised fine-tuning on Qwen2.5-3B-Instruct with 4-bit quantization (QLoRA) via PEFT. Evaluation metrics (ROUGE, BLEU, perplexity) are logged after each epoch.
+
+### Stage 2 — DPO Alignment
+
+Generate preference pairs and run Direct Preference Optimisation:
+
+```bash
+# Generate (prompt, chosen, rejected) triples
+python scripts/gendpo.py
+
+# Run DPO training
+python scripts/train_evaluate_dpo.py
+```
+
+The `chosen` response is the LLM-refined or user-edited version; `rejected` is the raw SLM output.
+
+### Stage 3 — Export to GGUF
+
+```bash
+python scripts/make_gg.py
+```
+
+### Continuous Learning (Automated)
+
+Once the system is live, retraining is triggered automatically based on accumulated feedback:
+
+| Threshold | Training Type | Script |
+|---|---|---|
+| ≥ 50 new feedback pairs | GRPO Reinforcement Learning | `reinforcement.py` |
+| ≥ 200 new feedback pairs | SFT + DPO Post-Training | `postTrainer.py` |
+
+To trigger manually:
+
+```bash
+# GRPO pass
+python backend/reinforcement.py
+
+# Full SFT + DPO pass
+python backend/postTrainer.py \
   --model-name unsloth/Qwen2.5-1.5B-Instruct \
   --output-dir ./models \
   --epochs-sft 2 \
   --epochs-dpo 1
 ```
 
-After training, the new GGUF is registered in MongoDB and the `/llm/stream` endpoint automatically uses it for subsequent requests.
+After each run, the new GGUF is registered in MongoDB. All subsequent requests to `/llm/stream?model=latest` will use the updated checkpoint.
 
 ---
 
-## API Endpoints
+## API Reference
 
-| Method | Route            | Description                                 |
-|--------|------------------|---------------------------------------------|
-| POST   | `/signup`        | Register new user                           |
-| POST   | `/login`         | Login, returns JWT                          |
-| GET    | `/llm/stream`    | SSE stream — SLM or Gemini inference        |
-| POST   | `/save-job`      | Save JD session (input + outputs + edits)   |
-| GET    | `/history`       | Fetch user's saved JDs                      |
-| GET    | `/training-runs` | View all training run metrics               |
-| GET    | `/models`        | List available models + current default     |
-| GET    | `/`              | Health check                                |
+All protected routes require an `Authorization: Bearer <token>` header.
 
-The `/llm/stream` endpoint accepts a `useLLM=true` flag to route through Gemini instead of the local model.
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/signup` | No | Register a new user |
+| `POST` | `/login` | No | Authenticate and receive JWT |
+| `GET` | `/llm/stream` | Yes | SSE stream — SLM or Gemini inference |
+| `POST` | `/save-job` | Yes | Persist a JD session with all outputs |
+| `GET` | `/history` | Yes | Retrieve the authenticated user's saved JDs |
+| `GET` | `/training-runs` | No | List all training runs with metrics |
+| `GET` | `/models` | No | List available models and current default |
+| `GET` | `/` | No | Health check |
+
+#### `/llm/stream` Query Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | `string` | required | Raw job description input |
+| `useLLM` | `boolean` | `false` | Route through Gemini instead of local SLM |
+| `slm_response` | `string` | `""` | SLM output to refine (used when `useLLM=true`) |
+| `model` | `string` | `qwen` | Model key to use for local inference |
 
 ---
 
-## Evaluation
+## Evaluation Metrics
 
-Each training run logs the following metrics to MongoDB (`training_runs` collection):
+Each training run records the following metrics to the `training_runs` MongoDB collection, visualised in the frontend Accuracy page:
 
-- Training loss, validation loss
-- Perplexity
-- ROUGE-1, ROUGE-2, ROUGE-L
-- BLEU score
-- DPO reward margin (post-training runs)
-- Structural completeness (checks for required headings)
+| Metric | Description |
+|---|---|
+| Training Loss | Cross-entropy loss on training split |
+| Validation Loss | Cross-entropy loss on held-out split |
+| Perplexity | Derived from validation loss |
+| ROUGE-1 / ROUGE-2 / ROUGE-L | N-gram overlap with reference outputs |
+| BLEU | Precision-based translation metric |
+| DPO Reward Margin | Log-probability difference between chosen and rejected (post-training only) |
+| Structural Completeness | Percentage of required headings present in generated output |
 
-These are visualized in the frontend's Accuracy page, which shows per-run trends over time.
+Required output headings validated during evaluation:
 
-Required headings the model is evaluated against:
 ```
 ## Job Title
 ## Location
@@ -215,16 +324,12 @@ Required headings the model is evaluated against:
 
 ## Environment Variables
 
-| Variable        | Where        | Description               |
-|-----------------|--------------|---------------------------|
-| `GEMINI_API_KEY`| `backend/.env` | Google Gemini API key   |
-| `SECRET_KEY`    | `backend/.env` | JWT signing secret      |
+Create a `.env` file inside the `backend/` directory:
+
+| Variable | Description |
+|---|---|
+| `GEMINI_API_KEY` | Google Gemini API key for LLM refinement |
+| `SECRET_KEY` | Secret used for signing JWT tokens |
 
 ---
 
-## Notes
-
-- The `latest` model key intentionally bypasses the in-memory model cache, so newly trained models are picked up without restarting the server.
-- DPO training uses `user_edited` as `chosen` when available, falling back to `llm_output`. The raw SLM output is always `rejected`.
-- The frontend streams tokens as they arrive — there's no polling, it's pure SSE.
-- Base model size is strictly under 4B parameters across all supported variants, per the problem constraints.
