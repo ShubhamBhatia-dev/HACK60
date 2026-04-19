@@ -9,8 +9,8 @@ export default function ChatInput() {
   const [loading, setLoading] = useState(false);
   const textareaRef = useRef(null);
 
-  const { addToHistory, activeTabId, openTabs, setActiveTab } = useAppStore();
-  const activeTab = openTabs.find(t => t.jobId === activeTabId);
+  const { addToHistory, activeTabId, openTabs, setActiveTab, selectedModel } = useAppStore();
+  const activeTab = openTabs.find(t => t.job_id === activeTabId);
 
   // mode: 'refine' when a tab is open, 'new' when no active tab
   const mode = activeTab ? 'refine' : 'new';
@@ -41,50 +41,102 @@ export default function ChatInput() {
     try {
       if (mode === 'refine' && activeTab) {
         // ── Refine mode: stream into the existing tab ──────────────────
-        const { setTabStreaming, clearTabStreaming, updateTabContent, setTabDisplay, appendTabChatMessage } = useAppStore.getState();
-        const jobId = activeTab.jobId;
+        const store = useAppStore.getState();
+        const job_id = activeTab.job_id;
 
-        // Mark tab as streaming immediately
-        setTabStreaming(jobId, '');
+        store.setTabStreaming(job_id, '');
 
-        await api.streamJobDescription(trimmedPrompt, useLLM, {
-          onChunk: (text) => setTabStreaming(jobId, text),
+        // Pass current best content as context so SLM knows what to refine
+        const currentVersions = useAppStore.getState().openTabs.find(t => t.job_id === job_id)?.versions || [];
+        const lastContent = currentVersions.length > 0
+          ? currentVersions[currentVersions.length - 1].content
+          : (activeTab.llm_output || activeTab.slm_output || '');
+
+        await api.streamJobDescription(trimmedPrompt, useLLM, lastContent, selectedModel, {
+          onChunk: (text) => useAppStore.getState().setTabStreaming(job_id, text),
           onDone:  (full, source) => {
+            const s = useAppStore.getState();
             const isLLM = source === 'LLM';
-            updateTabContent(jobId, full, isLLM);
-            setTabDisplay(jobId, full, null);
-            clearTabStreaming(jobId);
-            appendTabChatMessage(jobId, { role: 'user',      text: trimmedPrompt,  timestamp: new Date().toISOString() });
-            appendTabChatMessage(jobId, { role: 'assistant', text: full,           timestamp: new Date().toISOString() });
+            s.updateTabContent(job_id, full, isLLM);
+            // Auto-snapshot: record this SLM/LLM response in version history
+            s.addVersion(job_id, {
+              label:     isLLM ? 'LLM Output' : 'SLM Output',
+              source:    isLLM ? 'LLM' : 'SLM',
+              content:   full,
+              timestamp: new Date().toISOString(),
+            });
+            s.clearTabStreaming(job_id);        // MUST be before setTabDisplay
+            s.setTabDisplay(job_id, null);      // bump displayKey → editor remounts
+            s.appendTabChatMessage(job_id, { role: 'user',      text: trimmedPrompt, timestamp: new Date().toISOString() });
+            s.appendTabChatMessage(job_id, { role: 'assistant', text: full,          timestamp: new Date().toISOString() });
+            
+            // Update history title/content to reflect latest refinement
+            s.updateHistoryItem(job_id, {
+              prompt:     trimmedPrompt,
+              slm_output: isLLM ? activeTab.slm_output : full,
+              llm_output: isLLM ? full : activeTab.llm_output,
+              updated_at: new Date().toISOString()
+            });
+
+            // Persist to database
+            api.saveUserEdits({
+              job_id:      job_id,
+              prompt:      trimmedPrompt,
+              slm_output:  isLLM ? activeTab.slm_output : full,
+              llm_output:  isLLM ? full : activeTab.llm_output,
+              user_edited: activeTab.user_edited || null
+            }).catch(err => console.error('Auto-save failed:', err));
           },
-          onError: () => clearTabStreaming(jobId),
+          onError: () => useAppStore.getState().clearTabStreaming(job_id),
         });
 
       } else {
         // ── New mode: create tab first, then stream into it ────────────
         const tempJobId = 'job_' + Date.now();
         const newItem = {
-          jobId:                tempJobId,
-          prompt_given_by_user: trimmedPrompt,
-          slm_generated:        '',
-          llm_generated:        null,
-          isStreaming:          true,
-          streamingText:        '',
-          timestamp:            new Date().toISOString(),
-          chatHistory:          [],
+          job_id:        tempJobId,
+          prompt:        trimmedPrompt,
+          slm_output:    '',
+          llm_output:    null,
+          isStreaming:   true,
+          streamingText: '',
+          timestamp:     new Date().toISOString(),
+          chatHistory:   [],
         };
 
-        // Open tab immediately — user sees the streaming UI right away
         useAppStore.getState().addToHistory(newItem);
         useAppStore.getState().openHistoryItem(newItem);
 
-        await api.streamJobDescription(trimmedPrompt, useLLM, {
+        await api.streamJobDescription(trimmedPrompt, useLLM, '', selectedModel, {
           onChunk: (text) => useAppStore.getState().setTabStreaming(tempJobId, text),
           onDone:  (full, source) => {
+            const s = useAppStore.getState();
             const isLLM = source === 'LLM';
-            useAppStore.getState().updateTabContent(tempJobId, full, isLLM);
-            useAppStore.getState().setTabDisplay(tempJobId, full, null);
-            useAppStore.getState().clearTabStreaming(tempJobId);
+            s.updateTabContent(tempJobId, full, isLLM);
+            // Auto-snapshot: first version entry
+            s.addVersion(tempJobId, {
+              label:     isLLM ? 'LLM Output' : 'SLM Output',
+              source:    isLLM ? 'LLM' : 'SLM',
+              content:   full,
+              timestamp: new Date().toISOString(),
+            });
+            s.clearTabStreaming(tempJobId);     // MUST be before setTabDisplay
+            s.setTabDisplay(tempJobId, null);   // bump displayKey → editor remounts
+            
+            // Sync history entry with generated content
+            s.updateHistoryItem(tempJobId, {
+              slm_output: isLLM ? '' : full,
+              llm_output: isLLM ? full : null,
+              updated_at: new Date().toISOString()
+            });
+
+            // Persist to database
+            api.saveUserEdits({
+              job_id:      tempJobId,
+              prompt:      trimmedPrompt,
+              slm_output:  isLLM ? '' : full,
+              llm_output:  isLLM ? full : null
+            }).catch(err => console.error('Auto-save failed:', err));
           },
           onError: () => useAppStore.getState().clearTabStreaming(tempJobId),
         });
@@ -105,8 +157,8 @@ export default function ChatInput() {
   };
 
   const contextLabel = activeTab
-    ? (activeTab.prompt_given_by_user?.slice(0, 44) ?? '') +
-    (activeTab.prompt_given_by_user?.length > 44 ? '…' : '')
+    ? (activeTab.prompt?.slice(0, 44) ?? '') +
+    (activeTab.prompt?.length > 44 ? '…' : '')
     : null;
 
   const placeholderText = mode === 'refine'
@@ -168,21 +220,6 @@ export default function ChatInput() {
               : <Send size={14} />}
           </button>
         </div>
-
-        {/* <div className="chat-options">
-          <label className="chat-option-label" htmlFor="model-slm">
-            <input id="model-slm" type="radio" name="model_choice"
-              checked={!useLLM} onChange={() => setUseLLM(false)} />
-            <Cpu size={12} />
-            Local SLM
-          </label>
-          <label className="chat-option-label" htmlFor="model-llm">
-            <input id="model-llm" type="radio" name="model_choice"
-              checked={useLLM} onChange={() => setUseLLM(true)} />
-            <Bot size={12} />
-            External LLM
-          </label>
-        </div> */}
       </form>
     </div>
   );

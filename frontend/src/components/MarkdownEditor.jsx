@@ -18,72 +18,71 @@ import { useAppStore } from '../store/useAppStore';
 
 export default function MarkdownEditor({ tab }) {
   const ref = useRef(null);
-  const [saving,    setSaving]    = useState(false);
-  const [saved,     setSaved]     = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [enhancing, setEnhancing] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
-  const { updateTabContent, addVersion, setTabDisplay } = useAppStore();
+  const { updateTabContent, addVersion, setTabDisplay, setTabStreaming, clearTabStreaming, updateHistoryItem, selectedModel } = useAppStore();
 
-  // Show displayContent (version preview) if set, else latest generated
-  const initialMarkdown = tab.displayContent
-    ?? tab.llm_generated
-    ?? tab.slm_generated
-    ?? '';
+  const versions = tab.versions || [];
 
-  const sourceLabel = tab.llm_generated ? 'LLM' : 'SLM';
-  const hasBoth     = !!(tab.slm_generated && tab.llm_generated);
-  const versions    = tab.versions || [];
+  // ── What to show ──────────────────────────────────────────────────────────
+  // Version preview? → show that version's content
+  // Otherwise       → show latest output (slm or llm, whichever exists)
+  let initialMarkdown = '';
+  if (tab.activeVersionIdx != null) {
+    initialMarkdown = versions[tab.activeVersionIdx]?.content || '';
+  } else {
+    initialMarkdown = tab.slm_output || tab.llm_output || '';
+  }
 
-  // Version label in header
+  const sourceLabel = tab.llm_output ? 'LLM' : 'SLM';
+  const hasBoth = !!(tab.slm_output && tab.llm_output);
+
   const versionLabel = tab.activeVersionIdx != null
     ? `v${tab.activeVersionIdx + 1} · ${versions[tab.activeVersionIdx]?.label ?? ''}`
     : `Current · ${sourceLabel}`;
 
-  // ── Smart save: only snapshot if content actually changed ──────────────────
+  // ── Smart save ────────────────────────────────────────────────────────────
+  const normalize = (s) => (s ?? '').replace(/\s+/g, ' ').trim();
+
   const handleSave = async () => {
     if (!ref.current) return;
     setSaving(true);
     const md = ref.current.getMarkdown().trim();
 
-    // Detect what kind of content this is:
-    // - If it matches llm_generated → LLM output (no edit)
-    // - If it matches slm_generated → SLM output (no edit)
-    // - Otherwise → user has edited the content
-    const slmBase = (tab.slm_generated ?? '').trim();
-    const llmBase = (tab.llm_generated ?? '').trim();
-    const isUserEdit = md !== slmBase && md !== llmBase;
-    const isLLM      = !!tab.llm_generated;
+    const slmBase = normalize(tab.slm_output);
+    const llmBase = normalize(tab.llm_output);
+    const mdNorm = normalize(md);
 
-    const label  = isUserEdit ? 'User Edited'  : (isLLM ? 'LLM Output' : 'SLM Output');
-    const source = isUserEdit ? 'USER'         : (isLLM ? 'LLM'        : 'SLM');
+    const isUserEdit = mdNorm !== slmBase && mdNorm !== llmBase;
 
-    // Only snapshot if content differs from the last saved version
     const lastVersion = versions[versions.length - 1];
-    const isDirty = !lastVersion || lastVersion.content.trim() !== md;
+    const isDirty = !lastVersion || normalize(lastVersion.content) !== mdNorm;
 
-    if (isDirty) {
-      // User edits go into a separate field, don't overwrite slm/llm outputs
-      if (isUserEdit) {
-        useAppStore.getState().updateTabContent(tab.jobId, md, false); // store in slm slot as fallback
-      }
-      addVersion(tab.jobId, {
-        label,
-        source,
-        content:   md,
+    if (isDirty && isUserEdit) {
+      addVersion(tab.job_id, {
+        label: 'User Edited',
+        source: 'USER',
+        content: md,
         timestamp: new Date().toISOString(),
       });
     }
 
     try {
       await api.saveUserEdits({
-        jobId:                tab.jobId,
-        prompt_given_by_user: tab.prompt_given_by_user,
-        slm_output:           tab.slm_generated || '',
-        llm_output:           tab.llm_generated || null,
-        user_edited:          isUserEdit ? md : null,  // only set when user actually changed text
+        job_id: tab.job_id,
+        prompt: tab.prompt,
+        slm_output: tab.slm_output || '',
+        llm_output: tab.llm_output || null,
+        user_edited: isUserEdit ? md : null,
       });
       setSaved(true);
+      updateHistoryItem(tab.job_id, {
+        user_edited: isUserEdit ? md : null,
+        updated_at: new Date().toISOString()
+      });
       setTimeout(() => setSaved(false), 2500);
     } catch (err) {
       console.error(err);
@@ -97,22 +96,46 @@ export default function MarkdownEditor({ tab }) {
   const handleEnhance = async () => {
     if (!ref.current) return;
     setEnhancing(true);
+    const job_id = tab.job_id;
+    const currentMd = ref.current.getMarkdown();
+    if (!tab.slm_output && currentMd) updateTabContent(job_id, currentMd, false);
+
+    setTabStreaming(job_id, '');
+
     try {
-      const current  = ref.current.getMarkdown();
-      const response = await api.generateJobDescription(
-        `Enhance this job description:\n\n${current}`, true
+      await api.streamJobDescription(
+        tab.prompt,
+        true,
+        currentMd,
+        selectedModel,
+        {
+          onChunk: (text) => setTabStreaming(job_id, text),
+          onDone: (full) => {
+            updateTabContent(job_id, full, true);
+            addVersion(job_id, {
+              label: 'LLM Enhanced',
+              source: 'LLM',
+              content: full,
+              timestamp: new Date().toISOString(),
+            });
+            clearTabStreaming(job_id);
+            // Bump displayKey so editor remounts with new content
+            setTabDisplay(job_id, null);
+            updateHistoryItem(job_id, {
+              llm_output: full,
+              updated_at: new Date().toISOString()
+            });
+            api.saveUserEdits({
+              job_id, prompt: tab.prompt, slm_output: tab.slm_output, llm_output: full,
+              user_edited: tab.user_edited || null
+            }).catch(err => console.error('Auto-save failed:', err));
+          },
+          onError: (err) => {
+            clearTabStreaming(job_id);
+            throw err;
+          },
+        }
       );
-      if (!tab.slm_generated && current) updateTabContent(tab.jobId, current, false);
-      updateTabContent(tab.jobId, response.generatedMarkdown, true);
-      const newVersionIdx = versions.length; // index BEFORE addVersion
-      addVersion(tab.jobId, {
-        label:     'LLM Enhanced',
-        source:    'LLM',
-        content:   response.generatedMarkdown,
-        timestamp: new Date().toISOString(),
-      });
-      // Clear version preview so editor shows fresh LLM content
-      setTabDisplay(tab.jobId, response.generatedMarkdown, newVersionIdx);
     } catch (err) {
       console.error(err);
       alert('Enhancement failed.');
@@ -123,16 +146,18 @@ export default function MarkdownEditor({ tab }) {
 
   // ── Export ────────────────────────────────────────────────────────────────
   const exportMD = useCallback(() => {
-    const md   = ref.current?.getMarkdown() || '';
+    const md = ref.current?.getMarkdown() || '';
     const blob = new Blob([md], { type: 'text/markdown' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `job-description-${tab.jobId}.md`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `job-description-${tab.job_id}.md`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
     setExportOpen(false);
-  }, [tab.jobId]);
+  }, [tab.job_id]);
 
   const exportPDF = useCallback(() => {
     window.print();
@@ -154,7 +179,6 @@ export default function MarkdownEditor({ tab }) {
         </div>
 
         <div className="editor-actions">
-          {/* Enhance */}
           <button
             id="enhance-llm-btn"
             className="btn-enhance"
@@ -165,7 +189,6 @@ export default function MarkdownEditor({ tab }) {
             {enhancing ? 'Enhancing…' : 'Enhance with LLM'}
           </button>
 
-          {/* Save */}
           <button
             id="save-edits-btn"
             className="btn-secondary"
@@ -177,7 +200,6 @@ export default function MarkdownEditor({ tab }) {
               : <><Save size={13} />{saving ? 'Saving…' : 'Save'}</>}
           </button>
 
-          {/* Export dropdown */}
           <div className="export-wrap" onBlur={() => setExportOpen(false)} tabIndex={-1}>
             <button
               id="export-btn"
@@ -202,7 +224,6 @@ export default function MarkdownEditor({ tab }) {
       <div className="mdxeditor-wrapper">
         <MDXEditor
           ref={ref}
-          key={tab.displayKey ?? (tab.llm_generated ? 'llm' : 'slm')}
           markdown={initialMarkdown}
           plugins={[
             headingsPlugin(),

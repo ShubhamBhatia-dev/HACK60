@@ -10,17 +10,17 @@ export default function EditorTabs() {
   return (
     <div className="tabs-header">
       {openTabs.map(tab => {
-        const isActive = activeTabId === tab.jobId;
-        const label = tab.prompt_given_by_user
-          ? tab.prompt_given_by_user.slice(0, 28) + (tab.prompt_given_by_user.length > 28 ? '…' : '')
+        const isActive = activeTabId === tab.job_id;
+        const label = tab.prompt
+          ? tab.prompt.slice(0, 28) + (tab.prompt.length > 28 ? '…' : '')
           : 'New Job';
 
         return (
           <div
-            key={tab.jobId}
+            key={tab.job_id}
             className={`tab${isActive ? ' active' : ''}`}
-            onClick={() => setActiveTab(tab.jobId)}
-            title={tab.prompt_given_by_user}
+            onClick={() => setActiveTab(tab.job_id)}
+            title={tab.prompt}
           >
             <FileText size={12} className="tab-icon" />
             <span className="tab-title">{label}</span>
@@ -28,7 +28,7 @@ export default function EditorTabs() {
               className="tab-close"
               onClick={(e) => {
                 e.stopPropagation();
-                closeTab(tab.jobId);
+                closeTab(tab.job_id);
               }}
               title="Close tab"
             >

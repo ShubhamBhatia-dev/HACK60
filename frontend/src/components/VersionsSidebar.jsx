@@ -23,18 +23,17 @@ function MiniMd({ content }) {
 
 export default function VersionsSidebar({ tab, width, onResizeStart }) {
   const versions    = tab.versions || [];
-  const hasBoth     = !!(tab.slm_generated && tab.llm_generated);
+  const hasBoth     = !!(tab.slm_output && tab.llm_output);
   const setTabDisplay = useAppStore(s => s.setTabDisplay);
   const [view, setView] = useState(hasBoth ? 'compare' : 'history');
 
   const handleVersionClick = (v, idx) => {
-    setTabDisplay(tab.jobId, v.content, idx);
+    setTabDisplay(tab.job_id, idx);
   };
 
   // Restore current (live) content
   const handleRestoreCurrent = () => {
-    const content = tab.llm_generated ?? tab.slm_generated ?? '';
-    setTabDisplay(tab.jobId, content, null);
+    setTabDisplay(tab.job_id, null);
   };
 
   return (
@@ -71,12 +70,12 @@ export default function VersionsSidebar({ tab, width, onResizeStart }) {
         <div className="vs-panel-body">
           <div className="vs-block">
             <div className="vs-block-label slm"><Cpu size={11} /> SLM Output</div>
-            <div className="vs-block-content"><MiniMd content={tab.slm_generated} /></div>
+            <div className="vs-block-content"><MiniMd content={tab.slm_output} /></div>
           </div>
           <div className="vs-block-sep" />
           <div className="vs-block llm">
             <div className="vs-block-label llm"><Bot size={11} /> LLM Enhanced</div>
-            <div className="vs-block-content"><MiniMd content={tab.llm_generated} /></div>
+            <div className="vs-block-content"><MiniMd content={tab.llm_output} /></div>
           </div>
         </div>
       )}
@@ -92,15 +91,15 @@ export default function VersionsSidebar({ tab, width, onResizeStart }) {
             </div>
           ) : (
             <>
-              {/* "Current" entry at top */}
+              {/* "Current" entry at top — always red (live) */}
               <div
-                className={`vs-entry ${tab.activeVersionIdx == null ? 'vs-entry--active' : ''}`}
+                className={`vs-entry vs-entry--live ${tab.activeVersionIdx == null ? 'vs-entry--active' : ''}`}
                 onClick={handleRestoreCurrent}
                 title="View current content"
               >
                 <div className="vs-entry-top">
-                  <span className={`meta-badge ${tab.llm_generated ? 'meta-badge--llm' : ''}`}>
-                    {tab.llm_generated ? 'LLM' : 'SLM'}
+                  <span className={`meta-badge ${tab.llm_output ? 'meta-badge--llm' : ''}`}>
+                    {tab.llm_output ? 'LLM' : 'SLM'}
                   </span>
                   <span className="vs-entry-label">Current</span>
                   <span className="vs-entry-num">live</span>
@@ -111,10 +110,14 @@ export default function VersionsSidebar({ tab, width, onResizeStart }) {
               {[...versions].reverse().map((v, revIdx) => {
                 const realIdx = versions.length - 1 - revIdx;
                 const isActive = tab.activeVersionIdx === realIdx;
+                const sourceClass =
+                  v.source === 'LLM'  ? 'vs-entry--llm'  :
+                  v.source === 'USER' ? 'vs-entry--user' :
+                                       'vs-entry--slm';
                 return (
                   <div
                     key={realIdx}
-                    className={`vs-entry ${isActive ? 'vs-entry--active' : ''}`}
+                    className={`vs-entry ${sourceClass} ${isActive ? 'vs-entry--active' : ''}`}
                     onClick={() => handleVersionClick(v, realIdx)}
                     title="Click to view this version in editor"
                   >

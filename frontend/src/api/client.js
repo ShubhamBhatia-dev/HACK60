@@ -47,26 +47,14 @@ export const api = {
   /** Clear token on logout */
   logout: () => clearToken(),
 
-  /** GET /llm?query=...&useLLM=...  –  requires JWT */
-  generateJobDescription: async (prompt, useLLM = false) => {
-    const params = new URLSearchParams({ query: prompt, useLLM: useLLM ? 'true' : 'false' });
-    const data = await request(`/llm?${params}`);
-    const jobId = 'job_' + Date.now();
-    return {
-      jobId,
-      prompt,
-      generatedMarkdown: data.model_output,
-      source: data.source || (useLLM ? 'LLM' : 'SLM'),
-    };
-  },
-
+  
   /**
    * GET /llm/stream — SSE streaming version.
    * Uses fetch (not EventSource) because EventSource can't send Authorization headers.
    * Calls onChunk(accumulatedText) on each word, onDone(fullText, source) when complete.
    */
-  streamJobDescription: async (prompt, useLLM = false, { onChunk, onDone, onError } = {}) => {
-    const params = new URLSearchParams({ query: prompt, useLLM: useLLM ? 'true' : 'false' });
+  streamJobDescription: async (prompt, useLLM = false, slm_response = "", model = "qwen", { onChunk, onDone, onError } = {}) => {
+    const params = new URLSearchParams({ query: prompt, useLLM, slm_response, model });
     const token  = localStorage.getItem('jwt_token');
     const headers = { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -104,7 +92,7 @@ export const api = {
           if (data.done) {
             const full = data.full || accumulated;
             onDone?.(full, data.source || source);
-            return { jobId: 'job_' + Date.now(), prompt, generatedMarkdown: full, source: data.source || source };
+            return { job_id: 'job_' + Date.now(), prompt, generatedMarkdown: full, source: data.source || source };
           } else {
             accumulated += data.token;
             source       = data.source || source;
@@ -115,7 +103,7 @@ export const api = {
     }
     // Fallback if stream closes without done message
     onDone?.(accumulated, source);
-    return { jobId: 'job_' + Date.now(), prompt, generatedMarkdown: accumulated, source };
+    return { job_id: 'job_' + Date.now(), prompt, generatedMarkdown: accumulated, source };
   },
 
   // POST /save-job — persists fine-tuning tuple
@@ -123,8 +111,8 @@ export const api = {
     return request('/save-job', {
       method: 'POST',
       body: JSON.stringify({
-        job_id:      payload.jobId,
-        prompt:      payload.prompt_given_by_user || '',
+        job_id:      payload.job_id,
+        prompt:      payload.prompt || '',
         slm_output:  payload.slm_output  || '',
         llm_output:  payload.llm_output  || null,
         user_edited: payload.user_edited || null,

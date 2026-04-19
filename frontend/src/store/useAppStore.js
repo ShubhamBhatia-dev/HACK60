@@ -10,103 +10,102 @@ function loadUser() {
 export const useAppStore = create((set) => ({
   user: loadUser(),
   history: [],
-  openTabs: [],     // { jobId, prompt_given_by_user, slm_generated, llm_generated, chatHistory[] }
+  openTabs: [],     // { job_id, prompt, slm_output, llm_output, chatHistory[], versions[] }
   activeTabId: null,
+  selectedModel: 'qwen',  // active SLM model key
+
+  setSelectedModel: (model) => set({ selectedModel: model }),
 
   setUser: (user) => {
     localStorage.setItem('slm_user', JSON.stringify(user));
     set({ user });
   },
   logout: () => {
-    api.logout();                                    // clears JWT from localStorage
+    api.logout();
     localStorage.removeItem('slm_user');
     set({ user: null, openTabs: [], activeTabId: null, history: [] });
   },
 
   setHistory: (history) => set({ history }),
 
-  // Add a new item to history
   addToHistory: (item) => set((state) => ({
     history: [item, ...state.history]
   })),
 
-  // Open an item from history into a new tab (or switch to it if already open)
+  // Sync a history entry and move to top
+  updateHistoryItem: (job_id, updates) => set((state) => {
+    const item = state.history.find(i => i.job_id === job_id);
+    if (!item) return state;
+    return { history: [{ ...item, ...updates }, ...state.history.filter(i => i.job_id !== job_id)] };
+  }),
+
   openHistoryItem: (item) => set((state) => {
-    const existingTab = state.openTabs.find(tab => tab.jobId === item.jobId);
-    if (existingTab) {
-      return { activeTabId: item.jobId };
-    }
+    const existing = state.openTabs.find(t => t.job_id === item.job_id);
+    if (existing) return { activeTabId: item.job_id };
     return {
       openTabs: [...state.openTabs, { ...item, chatHistory: item.chatHistory || [] }],
-      activeTabId: item.jobId
+      activeTabId: item.job_id
     };
   }),
 
-  // Close a specific tab
-  closeTab: (jobId) => set((state) => {
-    const newTabs = state.openTabs.filter(tab => tab.jobId !== jobId);
-    let newActiveId = state.activeTabId;
-    if (state.activeTabId === jobId) {
-      newActiveId = newTabs.length > 0 ? newTabs[newTabs.length - 1].jobId : null;
+  closeTab: (job_id) => set((state) => {
+    const newTabs = state.openTabs.filter(t => t.job_id !== job_id);
+    let newActive = state.activeTabId;
+    if (state.activeTabId === job_id) {
+      newActive = newTabs.length > 0 ? newTabs[newTabs.length - 1].job_id : null;
     }
-    return { openTabs: newTabs, activeTabId: newActiveId };
+    return { openTabs: newTabs, activeTabId: newActive };
   }),
 
-  // Update editor content of a tab
-  updateTabContent: (jobId, content, isLLM = false) => set((state) => ({
+  // Simple: set slm_output or llm_output — that's it
+  updateTabContent: (job_id, content, isLLM = false) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
+      if (tab.job_id !== job_id) return tab;
       return isLLM
-        ? { ...tab, llm_generated: content }
-        : { ...tab, slm_generated: content };
+        ? { ...tab, llm_output: content }
+        : { ...tab, slm_output: content };
     })
   })),
 
-  // Append a chat message to a specific tab's chat history
-  appendTabChatMessage: (jobId, message) => set((state) => ({
+  appendTabChatMessage: (job_id, message) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
+      if (tab.job_id !== job_id) return tab;
       return { ...tab, chatHistory: [...(tab.chatHistory || []), message] };
     })
   })),
 
-  // Set active tab
-  setActiveTab: (jobId) => set({ activeTabId: jobId }),
+  setActiveTab: (job_id) => set({ activeTabId: job_id }),
 
-  // Add a version snapshot to a tab's versions array
-  // version: { label, source, content, timestamp }
-  addVersion: (jobId, version) => set((state) => ({
+  addVersion: (job_id, version) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
+      if (tab.job_id !== job_id) return tab;
       return { ...tab, versions: [...(tab.versions || []), version] };
     })
   })),
 
-  // Load a specific version into the editor (by index, or null for "current")
-  setTabDisplay: (jobId, content, versionIdx) => set((state) => ({
+  // View a version (idx = number) or go back to current (idx = null)
+  setTabDisplay: (job_id, versionIdx) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
+      if (tab.job_id !== job_id) return tab;
       return {
         ...tab,
-        displayContent:   content,
         activeVersionIdx: versionIdx,
         displayKey:       ((tab.displayKey) || 0) + 1,
       };
     })
   })),
 
-  // Update live streaming text (called per chunk during SSE)
-  setTabStreaming: (jobId, text) => set((state) => ({
+  // Streaming
+  setTabStreaming: (job_id, text) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
-      return { ...tab, isStreaming: true, streamingText: text };
+      if (tab.job_id !== job_id) return tab;
+      return { ...tab, isStreaming: true, streamingText: text, activeVersionIdx: null };
     })
   })),
 
-  // Clear streaming state when SSE is complete
-  clearTabStreaming: (jobId) => set((state) => ({
+  clearTabStreaming: (job_id) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
-      if (tab.jobId !== jobId) return tab;
+      if (tab.job_id !== job_id) return tab;
       return { ...tab, isStreaming: false, streamingText: '' };
     })
   })),

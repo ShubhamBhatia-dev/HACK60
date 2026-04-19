@@ -1,30 +1,47 @@
 from llama_cpp import Llama
 from config import phi_prompt
 
+# ── Model registry ────────────────────────────────────────────────────────────
+# Maps model key → path. Add more here without touching serve.py.
+MODELS = {
+    "qwen":      "./models/qwen_model.gguf",
+    "phi":       "./models/phi_model.gguf",
+    "tinyllama": "./models/tinyllama-jd.gguf",
+}
 
-# test file 
+DEFAULT_MODEL = "qwen"
 
-
-
-llm = None
-
-def get_llm():
-    global llm
-    if llm is None:
-        llm = Llama(
-	model_path="./models/phi_model.gguf",
-    n_gpu_layers=-1,
-    verbose=False ,
-    n_threads = 8 ,
-    n_batch=512)
-    return llm
+# Lazy-loaded cache — each model is loaded only once on first use.
+_cache: dict[str, Llama] = {}
 
 
+def get_llm(model_key: str = DEFAULT_MODEL) -> Llama:
+    key = model_key if model_key in MODELS else DEFAULT_MODEL
+    if key not in _cache:
+        _cache[key] = Llama(
+            model_path=MODELS[key],
+            n_gpu_layers=-1,
+            verbose=False,
+            n_threads=8,
+            n_batch=512,
+        )
+    return _cache[key]
 
-def chatWithMe(data) :
-    llm = get_llm()
-    prompt = phi_prompt(data)
-    response = llm(prompt=prompt ,stop=["<|end|>", "<|user|>"] , echo=False , max_tokens=200,temperature=0.3)
 
-    return response["choices"][0]["text"].strip()
+def stream_phi(data, context='', model_key: str = DEFAULT_MODEL):
+    llm = get_llm(model_key)
+    prompt = phi_prompt(data, context).strip() + "\n#"
 
+    yield "#"
+
+    for token in llm(
+        prompt=prompt,
+        stop=["<|end|>", "<|user|>", "<|system|>"],
+        echo=False,
+        max_tokens=800,
+        temperature=0.1,
+        stream=True,
+    ):
+        text = token["choices"][0]["text"]
+        if text:
+            yield text

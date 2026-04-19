@@ -6,27 +6,17 @@
 
 
 #for phi
-phi_prompt = lambda data: f"""<|user|>
-You are a helpful AI assistant.
-
-IMPORTANT:
-- Always respond in clean Markdown format
-- Use headings, bullet points, and formatting
-- Do NOT output raw code unless asked
--Just give Raw Mardown output nothing else 
--Dont give any extra information 
--Your are a structured output giver 
--User will give raw input for a job description 
--you have to output the structured job description that roates around user input strictly
--Stick to user domain
--for anything other than job description say you are not designed for this task
-
-User Query:
-{data}
-<|end|>
+phi_prompt = lambda data, context='': f"""<|system|>
+You are a professional HR System. 
+- Output ONLY structured Markdown. 
+- NO conversational filler (e.g., "Sure", "Here is").
+- If the input is not a job description, reply: "I am not designed for this task."
+- Use standard headings: # Job Title, ## Responsibilities, ## Requirements.<|end|>
+<|user|>
+{("\\nContext to refine:\\n" + context) if context.strip() else ""}
+User Input: {data}<|end|>
 <|assistant|>
 """
-
 
 
 
@@ -34,3 +24,15 @@ User Query:
 # databse settings 
 
 dburl = "mongodb://localhost:27017"
+
+
+
+
+#gemini config 
+
+gemini_config = {
+    "model_name" : "gemini-3-flash-preview" ,
+    "config" :{"system_instruction": "YOU are a professional HR who list organic job listings  . YOU STICK AROUND TO THE TERMS MENTIONED BY THE EMPLOYER LIKE DONT ADD ANYTHING ON YOUR OWN .  "}
+}
+
+

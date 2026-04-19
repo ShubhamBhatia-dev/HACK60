@@ -7,9 +7,10 @@ from datetime import datetime
 import asyncio
 import json
 
-from inference import chatWithMe
+from inference import stream_phi, DEFAULT_MODEL, MODELS
 from database import users_col, jobs_col
 from auth import hash_password, verify_password, create_token, get_current_user
+from gemini import stream_gemini , build_gemini_prompt
 
 app = FastAPI()
 
@@ -66,60 +67,101 @@ def login(body: LoginBody):
     return {"token": token, "user": {"id": user_id, "name": doc["name"], "email": body.email}}
 
 
-# ── Generation route ──────────────────────────────────────────────────────────
-# Query params used so long/multiline prompts don't break the URL
-@app.get("/llm")
-def llm_op(query: str, useLLM: bool = False, current_user: dict = Depends(get_current_user)):
-    if useLLM:
-        # Placeholder — swap with real LLM call when ready
-        op     = f"[LLM] Enhanced version of:\n\n{query}"
-        source = "LLM"
-    else:
-        op     = chatWithMe(query)
-        source = "SLM"
-    return {"model_output": op, "source": source}
+
 
 # ── Streaming generation via SSE ─────────────────────────────────────────────
+
 @app.get("/llm/stream")
 async def llm_stream(
     query: str,
     useLLM: bool = False,
+    slm_response: str = "",
+    model: str = DEFAULT_MODEL,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Server-Sent Events streaming endpoint.
-    Runs the model in a thread (non-blocking), then streams result word-by-word.
-    Each message: data: {"token": "...", "source": "SLM"}
-    Final message: data: {"done": true, "full": "...", "source": "SLM"}
-    """
     if useLLM:
-        full_text = f"[LLM] Enhanced version of:\n\n{query}"
-        source    = "LLM"
-    else:
-        # Run blocking chatWithMe in thread pool — keeps event loop free
-        full_text = await asyncio.to_thread(chatWithMe, query)
-        source    = "SLM"
+        
+        enhance_prompt = build_gemini_prompt(query, slm_response)
+        return StreamingResponse(
+            gemini_sse_stream(enhance_prompt),
+            media_type="text/event-stream",
+            headers=sse_headers()
+        )
+
+    # Queue bridges the sync llama thread → async event loop
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def run_inference():
+        """Runs in a thread; pushes tokens into the queue."""
+        try:
+            for token in stream_phi(query, context=slm_response, model_key=model):
+                loop.call_soon_threadsafe(queue.put_nowait, token)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
     async def token_stream():
-        words = full_text.split(' ')
-        for i, word in enumerate(words):
-            sep   = ' ' if i < len(words) - 1 else ''
-            chunk = json.dumps({"token": word + sep, "source": source})
-            yield f"data: {chunk}\n\n"
-            await asyncio.sleep(0.02)   # 40 ms/word ≈ 25 words/sec
-        # Done sentinel with full text for client verification
-        yield f"data: {json.dumps({'done': True, 'full': full_text, 'source': source})}\n\n"
+        full_text = []
+        loop.run_in_executor(None, run_inference)
+
+        while True:
+            token = await queue.get()
+            if token is None:   
+                break
+            full_text.append(token)
+            yield f"data: {json.dumps({'token': token, 'source': 'SLM'})}\n\n"
+
+        yield f"data: {json.dumps({'done': True, 'full': ''.join(full_text), 'source': 'SLM'})}\n\n"
 
     return StreamingResponse(
         token_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control":     "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection":        "keep-alive",
-        }
+        headers=sse_headers()
     )
 
+
+async def gemini_sse_stream(query: str):
+    """Gemini is already a sync generator — same queue pattern."""
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def run_gemini():
+        try:
+            for chunk in stream_gemini(query):
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    async def _stream():
+        full_text = []
+        loop.run_in_executor(None, run_gemini)
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            full_text.append(chunk)
+            yield f"data: {json.dumps({'token': chunk, 'source': 'LLM'})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'full': ''.join(full_text), 'source': 'LLM'})}\n\n"
+
+    async for item in _stream():
+        yield item
+
+
+def sse_headers():
+    return {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+
+
+
+
+
+
+
+
+# ------------------------------------------------------------------------
 @app.post("/save-job")
 def save_job(body: SaveJobBody, current_user: dict = Depends(get_current_user)):
     """
@@ -160,6 +202,7 @@ def get_history(current_user: dict = Depends(get_current_user)):
             {"_id": 0}               # exclude MongoDB _id
         ).sort("updated_at", -1).limit(50)
     )
+    print(docs)
     return docs
 
 
@@ -167,3 +210,14 @@ def get_history(current_user: dict = Depends(get_current_user)):
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+
+# ── Available SLM models ──────────────────────────────────────────────────────
+@app.get("/models")
+def list_models():
+    return {"models": list(MODELS.keys()), "default": DEFAULT_MODEL}
+
+
+
+
+

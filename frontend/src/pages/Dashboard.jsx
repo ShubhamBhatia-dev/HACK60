@@ -27,7 +27,7 @@ function StreamingPreview({ content, prompt }) {
 
 export default function Dashboard() {
   const { openTabs, activeTabId } = useAppStore();
-  const activeTab = openTabs.find(t => t.jobId === activeTabId);
+  const activeTab = openTabs.find(t => t.job_id === activeTabId);
 
   const [showVersions, setShowVersions] = useState(false);
   const [vsWidth, setVsWidth]           = useState(252);
@@ -80,10 +80,10 @@ export default function Dashboard() {
                 // Show streaming preview while SSE is in progress
                 <StreamingPreview
                   content={activeTab.streamingText}
-                  prompt={activeTab.prompt_given_by_user}
+                  prompt={activeTab.prompt}
                 />
               ) : (
-                <MarkdownEditor key={activeTab.jobId} tab={activeTab} />
+                <MarkdownEditor key={`${activeTab.job_id}-${activeTab.displayKey ?? 0}`} tab={activeTab} />
               )
             ) : (
               <div className="empty-state">
