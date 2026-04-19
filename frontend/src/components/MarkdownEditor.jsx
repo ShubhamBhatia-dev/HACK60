@@ -23,19 +23,12 @@ export default function MarkdownEditor({ tab }) {
   const [enhancing, setEnhancing] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
-  const { updateTabContent, addVersion, setTabDisplay, setTabStreaming, clearTabStreaming, updateHistoryItem, selectedModel } = useAppStore();
+  const { updateTabContent, addVersion, setTabStreaming, clearTabStreaming, updateHistoryItem, selectedModel } = useAppStore();
 
   const versions = tab.versions || [];
 
-  // ── What to show ──────────────────────────────────────────────────────────
-  // Version preview? → show that version's content
-  // Otherwise       → show latest output (slm or llm, whichever exists)
-  let initialMarkdown = '';
-  if (tab.activeVersionIdx != null) {
-    initialMarkdown = versions[tab.activeVersionIdx]?.content || '';
-  } else {
-    initialMarkdown = tab.slm_output || tab.llm_output || '';
-  }
+  // Version preview → previewContent. Live output → displayOutput.
+  const initialMarkdown = tab.previewContent ?? tab.displayOutput ?? '';
 
   const sourceLabel = tab.llm_output ? 'LLM' : 'SLM';
   const hasBoth = !!(tab.slm_output && tab.llm_output);
@@ -111,6 +104,7 @@ export default function MarkdownEditor({ tab }) {
         {
           onChunk: (text) => setTabStreaming(job_id, text),
           onDone: (full) => {
+            // updateTabContent sets llm_output + displayOutput + bumps displayKey
             updateTabContent(job_id, full, true);
             addVersion(job_id, {
               label: 'LLM Enhanced',
@@ -118,9 +112,8 @@ export default function MarkdownEditor({ tab }) {
               content: full,
               timestamp: new Date().toISOString(),
             });
+            // clearTabStreaming AFTER updateTabContent so spread captures new displayOutput
             clearTabStreaming(job_id);
-            // Bump displayKey so editor remounts with new content
-            setTabDisplay(job_id, null);
             updateHistoryItem(job_id, {
               llm_output: full,
               updated_at: new Date().toISOString()

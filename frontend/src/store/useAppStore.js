@@ -1,8 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
 
-// Re-hydrate user from localStorage so refresh keeps you logged in.
-// The JWT itself is stored separately via api helpers.
 function loadUser() {
   try { return JSON.parse(localStorage.getItem('slm_user')); } catch { return null; }
 }
@@ -10,9 +8,9 @@ function loadUser() {
 export const useAppStore = create((set) => ({
   user: loadUser(),
   history: [],
-  openTabs: [],     // { job_id, prompt, slm_output, llm_output, chatHistory[], versions[] }
+  openTabs: [],
   activeTabId: null,
-  selectedModel: 'qwen',  // active SLM model key
+  selectedModel: 'qwen',
 
   setSelectedModel: (model) => set({ selectedModel: model }),
 
@@ -20,6 +18,7 @@ export const useAppStore = create((set) => ({
     localStorage.setItem('slm_user', JSON.stringify(user));
     set({ user });
   },
+
   logout: () => {
     api.logout();
     localStorage.removeItem('slm_user');
@@ -32,7 +31,6 @@ export const useAppStore = create((set) => ({
     history: [item, ...state.history]
   })),
 
-  // Sync a history entry and move to top
   updateHistoryItem: (job_id, updates) => set((state) => {
     const item = state.history.find(i => i.job_id === job_id);
     if (!item) return state;
@@ -44,26 +42,32 @@ export const useAppStore = create((set) => ({
     if (existing) return { activeTabId: item.job_id };
     return {
       openTabs: [...state.openTabs, { ...item, chatHistory: item.chatHistory || [] }],
-      activeTabId: item.job_id
+      activeTabId: item.job_id,
     };
   }),
 
   closeTab: (job_id) => set((state) => {
     const newTabs = state.openTabs.filter(t => t.job_id !== job_id);
-    let newActive = state.activeTabId;
-    if (state.activeTabId === job_id) {
-      newActive = newTabs.length > 0 ? newTabs[newTabs.length - 1].job_id : null;
-    }
+    const newActive = state.activeTabId === job_id
+      ? (newTabs.length > 0 ? newTabs[newTabs.length - 1].job_id : null)
+      : state.activeTabId;
     return { openTabs: newTabs, activeTabId: newActive };
   }),
 
-  // Simple: set slm_output or llm_output — that's it
+  // Called when a model finishes generating.
+  // Sets slm_output / llm_output, sets displayOutput (what editor shows),
+  // and bumps displayKey to force MDXEditor remount.
   updateTabContent: (job_id, content, isLLM = false) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
       if (tab.job_id !== job_id) return tab;
-      return isLLM
-        ? { ...tab, llm_output: content }
-        : { ...tab, slm_output: content };
+      return {
+        ...tab,
+        ...(isLLM ? { llm_output: content } : { slm_output: content }),
+        displayOutput: content,                   // ← editor reads this
+        previewContent: null,                     // ← clear any version preview
+        activeVersionIdx: null,
+        displayKey: ((tab.displayKey) || 0) + 1, // ← forces MDXEditor remount
+      };
     })
   })),
 
@@ -83,19 +87,24 @@ export const useAppStore = create((set) => ({
     })
   })),
 
-  // View a version (idx = number) or go back to current (idx = null)
+  // View a specific version (idx = number) — sets previewContent, not displayOutput.
+  // Restore current (idx = null)         — clears previewContent, shows displayOutput again.
+  // Always bumps displayKey to remount editor.
   setTabDisplay: (job_id, versionIdx) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
       if (tab.job_id !== job_id) return tab;
       return {
         ...tab,
         activeVersionIdx: versionIdx,
-        displayKey:       ((tab.displayKey) || 0) + 1,
+        previewContent: versionIdx != null
+          ? ((tab.versions ?? [])[versionIdx]?.content ?? '')
+          : null,                                // null = show displayOutput (the live output)
+        displayKey: ((tab.displayKey) || 0) + 1,
       };
     })
   })),
 
-  // Streaming
+  // Streaming — just update the live preview text
   setTabStreaming: (job_id, text) => set((state) => ({
     openTabs: state.openTabs.map(tab => {
       if (tab.job_id !== job_id) return tab;

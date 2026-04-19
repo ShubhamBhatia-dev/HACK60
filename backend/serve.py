@@ -8,7 +8,7 @@ import asyncio
 import json
 
 from inference import stream_phi, DEFAULT_MODEL, MODELS
-from database import users_col, jobs_col
+from database import users_col, jobs_col, training_col
 from auth import hash_password, verify_password, create_token, get_current_user
 from gemini import stream_gemini , build_gemini_prompt
 
@@ -210,6 +210,15 @@ def get_history(current_user: dict = Depends(get_current_user)):
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+
+# ── Training runs (public — anyone can view metrics) ─────────────────────────
+@app.get("/training-runs")
+def get_training_runs(limit: int = 20):
+    docs = list(
+        training_col.find({}, {"_id": 0}).sort("started_at", -1).limit(limit)
+    )
+    return docs
 
 
 # ── Available SLM models ──────────────────────────────────────────────────────
